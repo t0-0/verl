@@ -18,16 +18,19 @@ from typing import Dict, Optional, Union
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
-from vllm.config import CacheConfig, DeviceConfig, LoadConfig, LoRAConfig, ModelConfig, ParallelConfig, SchedulerConfig
+from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
+                         ModelConfig, ParallelConfig, SchedulerConfig)
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 from vllm.model_executor.model_loader import BaseModelLoader
 from vllm.model_executor.model_loader.loader import _initialize_model
 from vllm.model_executor.model_loader.utils import set_default_torch_dtype
 
 from .config import LoadConfig, LoadFormat, ModelConfig
-from .dtensor_weight_loaders import load_dtensor_weights, update_dtensor_weight_loader
+from .dtensor_weight_loaders import (load_dtensor_weights,
+                                     update_dtensor_weight_loader)
 from .hf_weight_loader import update_hf_weight_loader
-from .megatron_weight_loaders import load_megatron_weights, update_megatron_weight_loader
+from .megatron_weight_loaders import (load_megatron_weights,
+                                      update_megatron_weight_loader)
 
 
 def get_model(
@@ -97,8 +100,11 @@ def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
         update_dtensor_weight_loader()
         return DummyModelLoader(load_config)
 
-    raise ValueError("load format not supported in verl: {}, only support {} and {}".format(
-        load_config.load_format, LoadFormat.MEGATRON, LoadFormat.HF))
+    raise ValueError(
+        "load format not supported in verl: {}, only support {} and {}".format(
+            load_config.load_format, LoadFormat.MEGATRON, LoadFormat.HF
+        )
+    )
 
 
 class DummyModelLoader(BaseModelLoader):
@@ -107,8 +113,10 @@ class DummyModelLoader(BaseModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
         if load_config.model_loader_extra_config:
-            raise ValueError(f"Model loader extra config is not supported for "
-                             f"load format {load_config.load_format}")
+            raise ValueError(
+                f"Model loader extra config is not supported for "
+                f"load format {load_config.load_format}"
+            )
 
     def download_model(self, model_config: ModelConfig) -> None:
         pass
@@ -125,7 +133,13 @@ class DummyModelLoader(BaseModelLoader):
     ) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config, lora_config, cache_config, scheduler_config)
+                model = _initialize_model(
+                    model_config,
+                    self.load_config,
+                    lora_config,
+                    cache_config,
+                    scheduler_config,
+                )
             # NOTE(woosuk): For accurate performance evaluation, we assign
             # random values to the weights.
             # initialize_dummy_weights(model)
@@ -138,8 +152,10 @@ class MegatronLoader(BaseModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
         if load_config.model_loader_extra_config:
-            raise ValueError(f"Model loader extra config is not supported for "
-                             f"load format {load_config.load_format}")
+            raise ValueError(
+                f"Model loader extra config is not supported for "
+                f"load format {load_config.load_format}"
+            )
 
     def download_model(self, model_config: ModelConfig) -> None:
         pass  # Nothing to download
@@ -165,12 +181,22 @@ class MegatronLoader(BaseModelLoader):
     ) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config, lora_config, cache_config, scheduler_config)
+                model = _initialize_model(
+                    model_config,
+                    self.load_config,
+                    lora_config,
+                    cache_config,
+                    scheduler_config,
+                )
 
             # TODO(sgm): This is a hack, we need to register the load_weight() func for each model in vllm
             if isinstance(actor_model, nn.Module):
-                load_megatron_weights(actor_weights=dict(actor_model.named_parameters(remove_duplicate=False)),
-                                      vllm_model=model)
+                load_megatron_weights(
+                    actor_weights=dict(
+                        actor_model.named_parameters(remove_duplicate=False)
+                    ),
+                    vllm_model=model,
+                )
             else:
                 load_megatron_weights(actor_weights=actor_model, vllm_model=model)
 
@@ -183,7 +209,9 @@ class MegatronLoader(BaseModelLoader):
                 if hasattr(module, "process_weights_after_loading"):
                     module.process_weights_after_loading()
         # NOTE(sgm) Some weights are point to gpu, but still need this.
-        model = model.cuda()  # NOTE (zhangchi.usc1992) We need this for vllm to profile memory usage
+        model = (
+            model.cuda()
+        )  # NOTE (zhangchi.usc1992) We need this for vllm to profile memory usage
         return model.eval()
 
 
@@ -193,8 +221,10 @@ class HFLoader(BaseModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
         if load_config.model_loader_extra_config:
-            raise ValueError(f"Model loader extra config is not supported for "
-                             f"load format {load_config.load_format}")
+            raise ValueError(
+                f"Model loader extra config is not supported for "
+                f"load format {load_config.load_format}"
+            )
 
     def download_model(self, model_config: ModelConfig) -> None:
         pass  # Nothing to download
@@ -205,7 +235,9 @@ class HFLoader(BaseModelLoader):
         elif isinstance(actor_model, nn.Module):
             return dict(actor_model.named_parameters()).items()
         else:
-            raise ValueError(f"actor model should be Dict or nn.Module, but get {type(actor_model)}")
+            raise ValueError(
+                f"actor model should be Dict or nn.Module, but get {type(actor_model)}"
+            )
 
     def load_model(
         self,
@@ -220,18 +252,29 @@ class HFLoader(BaseModelLoader):
         with set_default_torch_dtype(model_config.dtype):
             # with torch.device(device_config.device):
             # NOTE(sgm): init the model in cpu
-            model = _initialize_model(model_config, self.load_config, lora_config, cache_config, scheduler_config)
-            model.load_weights(self._get_weights_iterator(actor_model))
+            model = _initialize_model(
+                model_config,
+                self.load_config,
+                lora_config,
+                cache_config,
+                scheduler_config,
+            )
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+            with FSDP.summon_full_params(actor_model):
+                model.load_weights(self._get_weights_iterator(actor_model))
             for _, module in model.named_modules():
                 quant_method = getattr(module, "quant_method", None)
                 if quant_method is not None:
                     quant_method.process_weights_after_loading(module)
                 # FIXME: Remove this after Mixtral is updated
                 # to use quant_method.
-                if hasattr(module, "process_weights_after_loading"):
-                    module.process_weights_after_loading()
+                # if hasattr(module, "process_weights_after_loading"):
+                #    module.process_weights_after_loading()
         # NOTE(sgm) Some weights are point to gpu, but still need this.
-        model = model.cuda()  # NOTE (zhangchi.usc1992) We need this for vllm to profile memory usage
+        model = (
+            model.cuda()
+        )  # NOTE (zhangchi.usc1992) We need this for vllm to profile memory usage
         return model.eval()
 
 
@@ -241,8 +284,10 @@ class DTensorLoader(BaseModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
         if load_config.model_loader_extra_config:
-            raise ValueError(f"Model loader extra config is not supported for "
-                             f"load format {load_config.load_format}")
+            raise ValueError(
+                f"Model loader extra config is not supported for "
+                f"load format {load_config.load_format}"
+            )
 
     def download_model(self, model_config: ModelConfig) -> None:
         pass  # Nothing to download
@@ -268,12 +313,22 @@ class DTensorLoader(BaseModelLoader):
     ) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config, lora_config, cache_config, scheduler_config)
+                model = _initialize_model(
+                    model_config,
+                    self.load_config,
+                    lora_config,
+                    cache_config,
+                    scheduler_config,
+                )
 
             # TODO(sgm): This is a hack, we need to register the load_weight() func for each model in vllm
             if isinstance(actor_model, nn.Module):
-                load_dtensor_weights(actor_weights=dict(actor_model.named_parameters(remove_duplicate=False)),
-                                     vllm_model=model)
+                load_dtensor_weights(
+                    actor_weights=dict(
+                        actor_model.named_parameters(remove_duplicate=False)
+                    ),
+                    vllm_model=model,
+                )
             else:
                 load_dtensor_weights(actor_weights=actor_model, vllm_model=model)
 
@@ -286,7 +341,9 @@ class DTensorLoader(BaseModelLoader):
                 if hasattr(module, "process_weights_after_loading"):
                     module.process_weights_after_loading()
         # NOTE(sgm) Some weights are point to gpu, but still need this.
-        model = model.cuda()  # NOTE (zhangchi.usc1992) We need this for vllm to profile memory usage
+        model = (
+            model.cuda()
+        )  # NOTE (zhangchi.usc1992) We need this for vllm to profile memory usage
         return model.eval()
 
 
@@ -294,8 +351,12 @@ class DTensorLoader(BaseModelLoader):
 # as they use ray, the _get_logits result will only need to return to the driver node,
 # therefore gather is enough. However, we use SPMD instead of a central scheduler,
 # all_gather is required (aligned with v0.2.6)
-def _get_logits(self, hidden_states: torch.Tensor, embedding: torch.Tensor,
-                embedding_bias: Optional[torch.Tensor]) -> torch.Tensor:
+def _get_logits(
+    self,
+    hidden_states: torch.Tensor,
+    embedding: torch.Tensor,
+    embedding_bias: Optional[torch.Tensor],
+) -> torch.Tensor:
     # Get the logits for the next tokens.
     logits = torch.matmul(hidden_states, embedding.t())
     if embedding_bias is not None:
@@ -303,7 +364,7 @@ def _get_logits(self, hidden_states: torch.Tensor, embedding: torch.Tensor,
     logits = tensor_model_parallel_all_gather(logits)
     # Remove paddings in vocab (if any).
     if logits is not None:
-        logits = logits[:, :self.org_vocab_size]
+        logits = logits[:, : self.org_vocab_size]
     return logits
 
 
