@@ -222,6 +222,10 @@ class vLLMRollout(BaseRollout):
                 "temperature": self.config.val_kwargs.temperature,
                 "n": 1,  # if validate, already repeat in ray_trainer
             }
+        if not is_validate and self.config.double:
+            kwargs["n"] = (
+                kwargs["n"] * 2 if "n" in kwargs else self.sampling_params["n"]
+            )
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
@@ -234,6 +238,39 @@ class vLLMRollout(BaseRollout):
 
             # TODO(sgm): disable logprob when recompute_log_prob is enable
             # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
+            response = output[0].to(idx.device)
+
+            response = torch.cat([idx, response], dim=-1)
+
+            def process_res(res):
+                non_pad_indices = torch.nonzero(
+                    res != self.pad_token_id, as_tuple=False
+                )
+                token_ids = res[non_pad_indices[0][0] : non_pad_indices[-1][0]].tolist()
+                decoded_str = self.inference_engine.get_tokenizer().tokenizer.decode(
+                    token_ids
+                )
+                decoded_str = (
+                    decoded_str
+                    + '\nThere might be an error in the solution above because of lack of understanding of the question. Please correct the error, if any, and rewrite the solution. Only output the final solution! At the end of the Solution, when you give your final answer, write it in the form "Final Answer: The final answer is $answer$. I hope it is correct."\n'
+                )
+                return decoded_str
+
+            response = list(map(process_res, response))
+            output = self.inference_engine.generate(
+                prompts=response,
+                sampling_params=self.sampling_params,
+                use_tqdm=False,
+            )
+            for i in range(10):
+                print(
+                    f"TEST{i}\n",
+                    response[i],
+                    self.inference_engine.get_tokenizer().tokenizer.decode(
+                        output[0][i]
+                    ),
+                    flush=True,
+                )
             response = output[0].to(idx.device)
 
             # def process_res(res):
