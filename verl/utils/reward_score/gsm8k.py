@@ -24,19 +24,26 @@ class TimeoutError(Exception):
     pass
 
 
+pattern = re.compile(
+    r"(?:####\s*|Answer:?\s*|The answer is\s*)(-?\d+(\.\d+)?)", re.IGNORECASE
+)
+
+
 def extract_solution(solution_str, method="strict"):
     assert method in ["strict", "flexible"]
 
     if method == "strict":
         # this also tests the formatting of the model
-        solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
+        # solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
+        solution = pattern.search(solution_str)
         if solution is None:
             final_answer = None
         else:
-            final_answer = solution.group(0)
-            final_answer = (
-                final_answer.split("#### ")[1].replace(",", "").replace("$", "")
-            )
+            # final_answer = solution.group(0)
+            # final_answer = (
+            #    final_answer.split("#### ")[1].replace(",", "").replace("$", "")
+            # )
+            final_answer = solution.group(1)
     elif method == "flexible":
         answer = re.findall("(\\-?[0-9\\.\\,]+)", solution_str)
         final_answer = None
