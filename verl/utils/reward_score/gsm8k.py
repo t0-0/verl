@@ -12,59 +12,112 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import json
+import os
 import re
 import signal
-import subprocess
+from argparse import ArgumentParser
+from pathlib import Path
 
-# from sys import settrace
-# from time import monotonic
-
-
-class TimeoutError(Exception):
-    pass
-
-
-pattern = re.compile(
-    r"(?:####\s*|Answer:?\s*|The answer is\s*)(-?\d+(\.\d+)?)", re.IGNORECASE
-)
+import jsonlines
+import numpy as np
+import torch
+from math_verify import parse, verify
+from tqdm import tqdm
 
 
-def extract_solution(solution_str, method="strict"):
-    assert method in ["strict", "flexible"]
-
-    if method == "strict":
-        # this also tests the formatting of the model
-        # solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
-        solution = pattern.search(solution_str)
-        if solution is None:
-            final_answer = None
-        else:
-            # final_answer = solution.group(0)
-            # final_answer = (
-            #    final_answer.split("#### ")[1].replace(",", "").replace("$", "")
-            # )
-            final_answer = solution.group(1)
-    elif method == "flexible":
-        answer = re.findall("(\\-?[0-9\\.\\,]+)", solution_str)
-        final_answer = None
-        if len(answer) == 0:
-            # no reward is there is no answer
-            pass
-        else:
-            invalid_str = ["", "."]
-            # find the last number that is not '.'
-            for final_answer in reversed(answer):
-                if final_answer not in invalid_str:
-                    break
-    return final_answer
+def handler(signum, frame):
+    raise TimeoutError("Execution timed out!")
 
 
-def try_float(s):
+def execute_function(code: str, timeout=3):
     try:
-        f = float(s)
+        # Set the alarm handler
+        signal.signal(signal.SIGALRM, handler)
+        signal.alarm(timeout)  # Start the alarm
+        local_namespace = {}
+        exec(code, {}, local_namespace)
+        return str(local_namespace["simple_math_problem"]())
+    except TimeoutError as e:
+        return None
     except Exception:
-        f = None
-    return f
+        return None
+    finally:
+        # Always disable the alarm after execution
+        signal.alarm(0)
+
+
+def execute_tinygsm_code(text):
+    code = text.split("\ndef")[-1]
+    code = "def" + code
+    try:
+        return execute_function(code)
+    except:
+        return None
+
+
+def execute_llm_code(text):
+    try:
+        # Extract code inside <llm-code> tags
+        code_match = re.search(r"<llm-code>(.*?)</llm-code>", text, re.DOTALL)
+        if not code_match:
+            return None
+
+        code = code_match.group(1).strip()
+
+        # Create a dictionary for execution context
+        exec_globals = {}
+
+        # Split the code into lines and execute it
+        lines = code.split("\n")
+        last_expr = lines[-1]  # The last line of code
+        timeout = 3
+
+        try:
+            signal.signal(signal.SIGALRM, handler)
+            signal.alarm(timeout)  # Start the alarm
+            exec(code, exec_globals)
+        except TimeoutError as e:
+
+            return None
+        except Exception:
+            return None
+        finally:
+            # Always disable the alarm after execution
+            signal.alarm(0)
+
+        return str(eval(last_expr, exec_globals))
+    except:
+        return None
+
+
+def execute_code(text):
+    if "<llm-code>" in text:
+        code_out = execute_llm_code(text)
+        return code_out
+    else:
+        return execute_tinygsm_code(text)
+
+
+def parse_text_answer(text):
+    answer = parse(text)
+
+
+def get_llm_answer(text):
+    response_type = "text"
+    if "<llm-code>" in text:
+        code_out = execute_llm_code(text)
+        response_type = "llm-code"
+        if code_out is not None:
+            return parse(code_out), "llm-code"
+    if "def" in text:
+        code_out = execute_tinygsm_code(text)
+        response_type = "tinygsm-code"
+        if code_out is not None:
+            return parse(code_out), "tinygsm-code"
+
+    return parse(text), response_type
 
 
 def compute_score(
@@ -81,90 +134,9 @@ def compute_score(
         format_score: the score for the format
         score: the score for the correct answer
     """
-    # start = monotonic()
-
-    # def _trace(frame, event, arg):
-    #     if monotonic() - start > 60:
-    #         print(solution_str, flush=True)
-    #         raise TimeoutError("Execution exceeded the time limit!")
-    #     return _trace
-
-    # settrace(_trace)
-    def timeout_handler(signum, frame):
-        # print(solution_str, flush=True)
-        raise TimeoutError("Execution exceeded the time limit!")
-
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(60)
-    try:
-        # if "import" not in solution_str:
-        #    result = subprocess.run(
-        #        [
-        #            "python",
-        #            "-c",
-        #            f"def simple_math_problem() -> int:\n{solution_str}\nassert simple_math_problem()=={ground_truth}",
-        #        ],
-        #        timeout=60,
-        #    )
-        #    if result.returncode == 0:
-        #        ret = score
-        #    else:
-        #        ret = -1
-        if "import" not in solution_str:
-            exec(
-                f"def simple_math_problem() -> int:\n{solution_str}\nassert simple_math_problem()=={ground_truth}"
-            )
-            # exec(
-            #    f"""
-            #     import signal
-
-            #     def _timeout_handler(signum, frame):
-            #         raise ScriptTimeoutError("Script execution timed out")
-
-            #     signal.signal(signal.SIGALRM, _timeout_handler)
-            #     signal.alarm({60})
-
-            #     def simple_math_problem() -> int:
-            #        import time
-            #        time.sleep(120)
-            #        print("NG", flush=True)
-
-            #     assert simple_math_problem() == {ground_truth}
-
-            #     signal.alarm(0)
-            #     """
-            # )
-            ret = score
-        else:
-            ret = -1
-    except Exception as e:
-        ret = -1
-    finally:
-        #    settrace(None)
-        signal.alarm(0)
-    if ret == -1:
-        answer = extract_solution(solution_str=solution_str, method="strict")
-        answer2 = extract_solution(solution_str=solution_str, method="flexible")
-        if answer is None and answer2 is None:
-            ret = 0
-        else:
-            float_answer = try_float(answer)
-            float_answer2 = try_float(answer2)
-            float_ground_truth = try_float(ground_truth)
-            if answer == ground_truth or answer2 == ground_truth:
-                ret = score
-            elif (
-                float_answer is not None
-                and float_ground_truth is not None
-                and abs(float_answer - float_ground_truth) < 1e-5
-            ):
-                ret = score
-            elif (
-                float_answer2 is not None
-                and float_ground_truth is not None
-                and abs(float_answer2 - float_ground_truth) < 1e-5
-            ):
-                ret = score
-            else:
-                ret = format_score
+    llm_answer, _ = get_llm_answer(solution_str)
+    correct_answer = parse(ground_truth)
+    ret = 0.0
+    if verify(llm_answer, correct_answer) == True:
+        ret = score
     return ret
