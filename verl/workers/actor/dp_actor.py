@@ -209,20 +209,20 @@ class DataParallelPPOActor(BasePPOActor):
         assert self.config.grad_clip is not None
 
         if isinstance(self.actor_module, FSDP):
+            grad_norm_l1 = self.actor_module.clip_grad_norm_(
+                max_norm=1e9, norm_type=1.0
+            )
             grad_norm_l2 = self.actor_module.clip_grad_norm_(
                 max_norm=self.config.grad_clip
             )
-            grad_norm_l1 = self.actor_module.clip_grad_norm_(
-                max_norm=self.config.grad_clip, norm_type=1.0
-            )
         else:
-            grad_norm_l2 = torch.nn.utils.clip_grad_norm_(
-                self.actor_module.parameters(), max_norm=self.config.grad_clip
-            )
             grad_norm_l1 = torch.nn.utils.clip_grad_norm_(
                 self.actor_module.parameters(),
-                max_norm=self.config.grad_clip,
+                max_norm=1e9,
                 norm_type=1.0,
+            )
+            grad_norm_l2 = torch.nn.utils.clip_grad_norm_(
+                self.actor_module.parameters(), max_norm=self.config.grad_clip
             )
         self.actor_optimizer.step()
         return grad_norm_l2, grad_norm_l1
