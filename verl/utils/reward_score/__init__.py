@@ -32,10 +32,16 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
     Raises:
         NotImplementedError: If the reward function is not implemented for the given data source.
     """
-    if data_source == "openai/gsm8k":
+    if data_source in ['deepscaler', 'aime', 'amc', 'math', 'minerva', 'olympiad']:
+        from . import deepscaler
+        res = deepscaler.compute_score("", solution_str, ground_truth, extra_info, use_think=True)
+    elif data_source == "openai/gsm8k":
         from . import gsm8k
 
         res = gsm8k.compute_score(solution_str, ground_truth)
+    elif data_source in ['lighteval/MATH', 'DigitalLearningGmbH/MATH-lighteval', 'simplerl/math500', 'simplerl/math_level3to5', 'simplerl/aime24', 'Maxwell-Jia/AIME_2024', 'gneubig/aime-1983-2024']:
+        from . import math
+        res = math.compute_score(solution_str, ground_truth)
     elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval"]:
         from . import math
 

@@ -1156,6 +1156,17 @@ class RayPPOTrainer:
                         # update actor
                         with _timer("update_actor", timing_raw):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                            if self.global_steps%20==0 or self.global_steps==1:
+                                with open(os.environ.get('DUMP_DIR') + f'/{self.global_steps}.json', 'w') as f:
+                                    dump_data = list()
+                                    dump_num = 0
+                                    for i in range(len(batch.batch['responses'])):
+                                        decoded_text = self.tokenizer.decode(batch.batch['responses'][i], skip_special_tokens=True)
+                                        dump_data.append(decoded_text)
+                                        dump_num += 1
+                                        if dump_num == 10:
+                                            break
+                                    json.dump(dump_data, f)
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)

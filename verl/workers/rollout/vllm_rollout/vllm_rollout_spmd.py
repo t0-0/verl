@@ -51,6 +51,144 @@ from verl.workers.rollout.base import BaseRollout
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+import re
+from collections import Counter
+import random
+
+PAIRS = {
+    'accordingly': 'regardless',
+    'after': 'before',
+    'afterwards': 'beforehand',
+    'against': 'for',
+    'also': 'instead',
+    'although': 'because',
+    'and': 'or',
+    'and nor': 'but or',
+    'and or': 'but nor',
+    'anyway': 'nevertheless',
+    'apparently not': 'in fact',
+    'as': 'though',
+    'as if': 'unlike',
+    'as long as': 'unless',
+    'as much as': 'despite',
+    'as soon as': 'not until',
+    'as though': 'whereas',
+    'because': 'although',
+    'before': 'after',
+    'beforehand': 'afterwards',
+    'both': 'neither',
+    #'both...and': 'neither...nor',
+    'but': 'and',
+    'but nor': 'and or',
+    'but or': 'and nor',
+    'consequently': 'however',
+    'despite': 'because',
+    'despite that': 'thereby',
+    'differently': 'likewise',
+    #'either...or': 'neither...nor',
+    'even': 'only',
+    'even if': 'only if',
+    'even though': 'although',
+    'finally': 'initially',
+    'for': 'against',
+    'formerly': 'lately',
+    'from': 'till',
+    'furthermore': 'however',
+    'hardly': 'indeed',
+    'hence': 'nevertheless',
+    'however': 'therefore',
+    'if': 'unless',
+    'if not': 'otherwise',
+    'in addition': 'instead',
+    'in case': 'unless',
+    'in fact': 'apparently not',
+    'in order that': 'so',
+    'in reverse': 'thus',
+    'incidentally': 'relevantly',
+    'indeed': 'hardly',
+    'initially': 'finally',
+    'instead': 'rather than',
+    #'just as...so': 'not as...so',
+    'lately': 'formerly',
+    'later': 'now',
+    'likewise': 'differently',
+    'meanwhile': 'afterwards',
+    'more': 'no more',
+    'moreover': 'nonetheless',
+    'neither': 'both',
+    #'neither...nor': 'either...or',
+    'never': 'whenever',
+    'next': 'previously',
+    'no longer': 'still',
+    'no more': 'more',
+    'nonetheless': 'however',
+    #'not as...so': 'just as...so',
+    #'not only...but also': 'both...and',
+    'not until': 'as soon as',
+    'now': 'later',
+    'nowhere': 'wherever',
+    'only': 'even',
+    'only if': 'even if',
+    'or': 'and',
+    'otherwise': 'if not',
+    'nevertheless': 'anyway',
+    'previously': 'next',
+    'provided that': 'unless',
+    'rather than': 'instead',
+    'regardless': 'accordingly',
+    'relevantly': 'incidentally',
+    'since': 'until',
+    'so': 'but',
+    'so that': 'though',
+    'still': 'no longer',
+    'subsequently': 'previously',
+    'such that': 'nevertheless',
+    'than': 'as',
+    'that': 'if',
+    'then': 'now',
+    'thereby': 'despite that',
+    'therefore': 'nevertheless',
+    'though': 'because',
+    'thus': 'in reverse',
+    'till': 'from',
+    'unlike': 'as if',
+    'unless': 'if',
+    'until': 'since',
+    'when': 'unless',
+    'whenever': 'never',
+    'where': 'nowhere',
+    'whereas': 'although',
+    'wherever': 'nowhere',
+    #'whether...or': 'neither...nor',
+    'while': 'whereas',
+    'yet': 'and',
+}
+
+def build_pattern(word: str) -> str:
+    """
+    接続詞単語／フレーズを正規表現パターンに変換。
+    空白は \s+ に、単語境界で囲む。
+    """
+    esc = re.escape(word)
+    esc = esc.replace(r"\ ", r"\s+")
+    esc = esc.replace(r"...", r".+")
+    return rf"\b{esc}\b"
+
+PATTERNS = {word: re.compile(build_pattern(word), flags=re.IGNORECASE) for word in PAIRS.keys()}
+
+
+def count_conjunctions(text: str) -> Counter:
+    """
+    テキスト中の各接続詞出現回数をカウントして返す。
+    """
+    counts = Counter()
+
+    for word, pat in PATTERNS.items():
+        matches = pat.findall(text)
+        if matches:
+            counts[word] = len(matches)
+    return counts
+
 # TODO
 # 1. support pp in vllm
 # 2. passing tokenizer is not necessary? no encoding/decoding is happending here
@@ -176,7 +314,7 @@ class vLLMRollout(BaseRollout):
 
         kwargs = dict(
             n=1,
-            logprobs=0,  # can be set to 0 and let actor to recompute
+            logprobs=1,  # can be set to 0 and let actor to recompute
             max_tokens=config.response_length,
         )
 
@@ -297,14 +435,93 @@ class vLLMRollout(BaseRollout):
 
             response = []
             rollout_log_probs = []
+            rollout_entropy = []
             for output in outputs:
                 for sample_id in range(len(output.outputs)):
                     response_ids = output.outputs[sample_id].token_ids
                     response.append(response_ids)
                     curr_log_prob = []
+                    curr_entropy = []
                     for i, logprob in enumerate(output.outputs[sample_id].logprobs):
                         curr_log_prob.append(logprob[response_ids[i]].logprob)
+                        curr_entropy.append(logprob[-1].logprob)
                     rollout_log_probs.append(curr_log_prob)
+                    rollout_entropy.append(curr_entropy)
+            #print(f"{len(response)=}")
+            #for res in response[:16]:
+            #    print(f"{self.inference_engine.get_tokenizer().decode(res)!r}", flush=True)
+
+            if self.config.get("inv_conj", False) and not is_validate:
+                orig_prompts = list()
+                orig_logprobs = list()
+                new_prompts = list()
+                new_prompts_ids = list()
+                for j in range(len(response) // self.sampling_params.n):
+                    response_list = [response[self.sampling_params.n*j+i] for i in range(self.sampling_params.n)]
+                    logprobs_list = [rollout_log_probs[self.sampling_params.n*j+i] for i in range(self.sampling_params.n)]
+                    cur_new_prompts = list()
+                    none_conj_prompts = list()
+                    none_conj_logprobs = list()
+                    for i in range(len(response_list)):
+                        pre_text = self.inference_engine.get_tokenizer().decode(vllm_inputs[j]["prompt_token_ids"])
+                        post_text = self.inference_engine.get_tokenizer().decode(response_list[i])
+                        count = count_conjunctions(post_text)
+                        if sum(count.values())>0:
+                            orig_prompts.append(response_list[i])
+                            orig_logprobs.append(logprobs_list[i])
+                            for k in random.sample(count.keys(), 1):
+                                key_idx = random.sample([m.start() for m in PATTERNS[k].finditer(post_text)], 1)[0]
+                                if post_text[key_idx].isupper():
+                                    cur_new_prompts.append(pre_text + post_text[:key_idx] + PAIRS[k].capitalize())
+                                    new_prompts_ids.append(j)
+                                else:
+                                    cur_new_prompts.append(pre_text + post_text[:key_idx] + PAIRS[k])
+                                    new_prompts_ids.append(j)
+                        else:
+                            none_conj_prompts.append(response_list[i])
+                            none_conj_logprobs.append(logprobs_list[i])
+                        if len(response_list) / 2 <= len(cur_new_prompts):
+                            break
+                    if len(response_list) / 2 > len(cur_new_prompts):
+                        for conj_idx in random.sample(range(len(none_conj_prompts)), len(response_list)-len(cur_new_prompts)*2):
+                            orig_prompts.append(none_conj_prompts[conj_idx])
+                            orig_logprobs.append(none_conj_logprobs[conj_idx])
+                    new_prompts.extend(cur_new_prompts)
+
+                with self.update_sampling_params(**{"n": 1, "prompt_logprobs": 1}):
+                    outputs = self.inference_engine.generate(
+                        prompts=new_prompts,  # because we have already convert it to prompt token id
+                        sampling_params=self.sampling_params,
+                        lora_request=lora_requests,
+                        use_tqdm=False,
+                    )
+
+                # TODO(sgm): disable logprob when recompute_log_prob is enable
+                # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
+
+                response = []
+                rollout_log_probs = []
+                for output, new_id in zip(outputs, new_prompts_ids):
+                    for sample_id in range(len(output.outputs)):
+                        response_ids = output.outputs[sample_id].token_ids
+                        response.append(output.prompt_token_ids[len(vllm_inputs[new_id]["prompt_token_ids"]):] + response_ids)
+                        response[-1] = response[-1][:self.config.response_length]
+                        curr_log_prob = []
+                        for logprob, prompt_token_id in zip(output.prompt_logprobs[len(vllm_inputs[new_id]["prompt_token_ids"]):], output.prompt_token_ids[len(vllm_inputs[new_id]["prompt_token_ids"]):]):
+                            curr_log_prob.append(logprob[prompt_token_id].logprob)
+                        for i, logprob in enumerate(output.outputs[sample_id].logprobs):
+                            curr_log_prob.append(logprob[response_ids[i]].logprob)
+                        curr_log_prob = curr_log_prob[:self.config.response_length]
+                        rollout_log_probs.append(curr_log_prob)
+                for i in range(len(response)):
+                    orig_prompts.insert(new_prompts_ids[i]*self.sampling_params.n, response[i])
+                    orig_logprobs.insert(new_prompts_ids[i]*self.sampling_params.n, rollout_log_probs[i])
+                response = orig_prompts
+                rollout_log_probs = orig_logprobs
+                #print(f"{len(response)=}")
+                #for res in response[:16]:
+                #    print(f"{self.inference_engine.get_tokenizer().decode(res)!r}", flush=True)
+                    #print(f"{len(rollout_log_probs)=}, {max([len(rlp) for rlp in rollout_log_probs])}")
 
             response = pad_2d_list_to_length(response, self.pad_token_id, max_length=self.config.response_length).to(idx.device)
             rollout_log_probs = pad_2d_list_to_length(rollout_log_probs, -1, max_length=self.config.response_length).to(idx.device)

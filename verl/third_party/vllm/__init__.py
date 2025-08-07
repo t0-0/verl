@@ -44,6 +44,30 @@ elif vs.parse(package_version) >= vs.parse("0.7.0"):
     # From 0.6.6.post2 on, vllm supports SPMD inference
     # See https://github.com/vllm-project/vllm/pull/12071
 
+    import torch
+    from vllm.v1.sample.sampler import Sampler
+
+    orig = Sampler.forward
+    def forward(self, logits, sampling_metadata):
+        def compute_entropy_from_logits(logits: torch.Tensor) -> float:
+            """
+            logits: (vocab_size,) の Tensor
+            """
+            probs = torch.softmax(logits, dim=-1)
+            ret = -torch.sum(probs * torch.log(probs + 1e-12), dim=-1)
+            return ret
+        entropy = compute_entropy_from_logits(logits)
+        sampler_output = orig(self, logits, sampling_metadata)
+        if sampling_metadata.max_num_logprobs is not None:
+            tmp = sampler_output.logprobs_tensors.logprob_token_ids
+            tmp[:,1]=-1
+            sampler_output.logprobs_tensors = sampler_output.logprobs_tensors._replace(logprob_token_ids=tmp)
+            tmp = sampler_output.logprobs_tensors.logprobs
+            tmp[:,1]=entropy
+            sampler_output.logprobs_tensors = sampler_output.logprobs_tensors._replace(logprobs=tmp) #torch.cat([sampler_output.logprobs_tensors.logprobs[:, 0], torch.zeros_like(sampler_output.logprobs_tensors.logprobs[:, 1])], dim=-1)) #entropy.unsqueeze(1)], dim=-1))
+        #print(f"{sampler_output.logprobs_tensors=}", flush=True)
+        return sampler_output
+    Sampler.forward=forward
     from vllm import LLM
     from vllm.distributed import parallel_state
 else:
